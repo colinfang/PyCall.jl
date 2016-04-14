@@ -27,6 +27,49 @@ using Compat
 import Base.unsafe_convert
 
 #########################################################################
+# Debug
+
+"""
+Without task switch.
+"""
+function println_directly(x::AbstractString)
+    ccall(:jl_, Void, (Any,), x)
+end
+
+"""
+Default message on Julia side.
+"""
+const DEFAULT_JS = "no_js"
+
+"""
+Example of a callback.
+"""
+function step_in(js::AbstractString, ps::AbstractString)
+    #if js == DEFAULT_JS && startswith(ps, "PyObject (u")
+    #    println_directly("where is my error?")
+    #    error("step in!")
+    #end
+end
+
+type Config
+    track_pyobject::Bool
+    track_init::Bool
+    print::Bool
+    max_length::Int
+    step_in::Function
+end
+
+const CONFIG = Config(false, true, true, 50, step_in)
+
+const PYOBJECTS_TRACKED = Dict{UInt, AbstractString}()
+
+type PyCallStats
+    num_pyobjects_created::Int
+end
+
+const PYCALL_STATS = PyCallStats(0)
+
+##########################################################################
 
 const depfile = joinpath(dirname(@__FILE__), "..", "deps", "deps.jl")
 isfile(depfile) || error("PyCall not properly installed. Please run Pkg.build(\"PyCall\")")
@@ -101,18 +144,82 @@ typealias PyPtr Ptr{PyObject_struct} # type for PythonObject* in ccall
 # Wrapper around Python's C PyObject* type, with hooks to Python reference
 # counting and conversion routines to/from C and Julia types.
 
+
 type PyObject
     o::PyPtr # the actual PyObject*
     function PyObject(o::PyPtr)
         po = new(o)
+        PYCALL_STATS.num_pyobjects_created += 1
+        mark_init(po, DEFAULT_JS)
         finalizer(po, pydecref)
         return po
     end
+    
+    """
+    So that we can opt out tracking.
+    """
+    function PyObject(o::PyPtr, to_track::Bool)
+        po = new(o)
+        PYCALL_STATS.num_pyobjects_created += 1
+        if to_track
+            mark_init(po, DEFAULT_JS)
+        end        
+        finalizer(po, pydecref)
+        return po
+    end
+    
+    function PyObject(o::PyPtr, s::AbstractString)
+        po = new(o)
+        PYCALL_STATS.num_pyobjects_created += 1
+        mark_init(po, s)
+        finalizer(po, pydecref)
+        return po
+    end       
 end
+
+function mark_init(o::PyObject, x::AbstractString)
+    if CONFIG.track_pyobject
+        addr = UInt(pointer_from_objref(o))
+        if CONFIG.track_init
+            # Cannot stringify complex type created by pyjlwrap_new.  
+            if x != "pyjlwrap_new|PyTypeObject"
+                js = x[1:min(CONFIG.max_length, end)]
+                println_directly("Init $addr: js=$js")            
+                # Be carefull this could create extra PyObject.
+                ps = string(o)[1:min(CONFIG.max_length, end)]
+                println_directly("--> Init: ps=$ps")
+                CONFIG.step_in(js, ps)
+            else
+                # So that js is completely despite the max_length.
+                js = x
+                println_directly("Init $addr: js=$js")                
+            end
+        end
+        PYOBJECTS_TRACKED[addr] = js
+    end
+end
+
+function mark_fin(o::PyObject)
+    if CONFIG.track_pyobject
+        addr = UInt(pointer_from_objref(o))
+        if haskey(PYOBJECTS_TRACKED, addr)
+            js = PYOBJECTS_TRACKED[addr]
+            println_directly("Pydecref $addr: js=$js")
+            # Cannot stringify complex type created by pyjlwrap_new.  
+            if js != "pyjlwrap_new|PyTypeObject"
+                # Be carefull this could create extra PyObject.
+                ps = string(o)[1:min(CONFIG.max_length, end)]
+                println_directly("--> Pydecref: ps=$ps")
+            end
+        end
+    end
+end
+
 
 PyNULL() = PyObject(convert(PyPtr, C_NULL))
 
 function pydecref(o::PyObject)
+    mark_fin(o)
     ccall(@pysym(:Py_DecRef), Void, (PyPtr,), o.o)
     o.o = convert(PyPtr, C_NULL)
     o
@@ -193,7 +300,7 @@ function pystring(o::PyObject)
                 return string(o.o)
             end
         end
-        return convert(AbstractString, PyObject(s))
+        return convert(AbstractString, PyObject(s, false))
     end
 end
 
@@ -268,7 +375,7 @@ function getindex(o::PyObject, s::AbstractString)
         pyerr_clear()
         throw(KeyError(s))
     end
-    return PyObject(p)
+    return PyObject(p, s)
 end
 
 getindex(o::PyObject, s::Symbol) = convert(PyAny, getindex(o, string(s)))
@@ -386,20 +493,30 @@ function pycall(o::Union{PyObject,PyPtr}, returntype::TypeTuple, args...; kwargs
     nargs = length(args)
     sigatomic_begin()
     try
-        arg = PyObject(@pycheckn ccall((@pysym :PyTuple_New), PyPtr, (Int,),
-                                       nargs))
+        arg = PyObject(
+            @pycheckn(ccall((@pysym :PyTuple_New), PyPtr, (Int,), nargs)),
+            string("pycall|PyTuple_New", args, kwargs)
+        )
+                                       
         for i = 1:nargs
             @pycheckz ccall((@pysym :PyTuple_SetItem), Cint,
                              (PyPtr,Int,PyPtr), arg, i-1, oargs[i])
             pyincref(oargs[i]) # PyTuple_SetItem steals the reference
         end
         if isempty(kwargs)
-            ret = PyObject(@pycheckn ccall((@pysym :PyObject_Call), PyPtr,
-                                          (PyPtr,PyPtr,PyPtr), o, arg, C_NULL))
+            ret = PyObject(
+                @pycheckn(ccall((@pysym :PyObject_Call), PyPtr,
+                                          (PyPtr,PyPtr,PyPtr), o, arg, C_NULL)),
+                string("pycall|kw_empty", args, kwargs)
+            )
         else
             kw = PyObject((AbstractString=>Any)[string(k) => v for (k, v) in kwargs])
-            ret = PyObject(@pycheckn ccall((@pysym :PyObject_Call), PyPtr,
-                                            (PyPtr,PyPtr,PyPtr), o, arg, kw))
+            ret = PyObject(
+                @pycheckn(ccall((@pysym :PyObject_Call), PyPtr,
+                    (PyPtr,PyPtr,PyPtr), o, arg, kw)),
+                string("pycall|kw", args, kwargs)
+            )
+                                           
         end
         jret = convert(returntype, ret)
         return jret
@@ -431,13 +548,18 @@ function get(o::PyObject, returntype::TypeTuple, k, default)
         pyerr_clear()
         default
     else
-        convert(returntype, PyObject(r))
+        convert(returntype, PyObject(r, "get"))
     end
 end
 
 get(o::PyObject, returntype::TypeTuple, k) =
-    convert(returntype, PyObject(@pycheckn ccall((@pysym :PyObject_GetItem),
-                                 PyPtr, (PyPtr,PyPtr), o, PyObject(k))))
+    convert(returntype, 
+        PyObject(
+            @pycheckn(ccall((@pysym :PyObject_GetItem),
+                PyPtr, (PyPtr,PyPtr), o, PyObject(k))),
+            "get"
+        )
+    )
 
 get(o::PyObject, k, default) = get(o, PyAny, k, default)
 get(o::PyObject, k) = get(o, PyAny, k)
@@ -468,7 +590,12 @@ function ind2py(i)
     return i-1
 end
 
-getindex(o::PyObject, i::Integer) = convert(PyAny, PyObject(@pycheckn ccall((@pysym :PySequence_GetItem), PyPtr, (PyPtr, Int), o, ind2py(i))))
+getindex(o::PyObject, i::Integer) = convert(PyAny, 
+    PyObject(
+        @pycheckn(ccall((@pysym :PySequence_GetItem), PyPtr, (PyPtr, Int), o, ind2py(i))), 
+        "getindex"
+    )
+)
 function setindex!(o::PyObject, v, i::Integer)
     @pycheckz ccall((@pysym :PySequence_SetItem), Cint, (PyPtr, Int, PyPtr), o, ind2py(i), PyObject(v))
     v

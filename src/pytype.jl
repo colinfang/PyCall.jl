@@ -411,8 +411,11 @@ end
 #  since, the jl_value_t* may be to a temporary copy.  But don't need
 #  to wrap isbits types in Python objects anyway.)
 function pyjlwrap_new(pyT::PyTypeObject, value::Any)
-    o = PyObject(@pycheckn ccall((@pysym :_PyObject_New),
-                                 PyPtr, (Ptr{PyTypeObject},), &pyT))
+    o = PyObject(
+            @pycheckn(ccall((@pysym :_PyObject_New),
+                PyPtr, (Ptr{PyTypeObject},), &pyT)),
+        "pyjlwrap_new|PyTypeObject"
+    )
     pycall_gc[o.o] = value
     p = convert(Ptr{Ptr{Void}}, o.o)
     unsafe_store!(p, ccall(:jl_value_ptr, Ptr{Void}, (Any,), value), 3)

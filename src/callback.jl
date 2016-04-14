@@ -14,9 +14,12 @@ function pymethod(f::Function, name::AbstractString, flags::Integer)
     # so we define an anonymous global to hold it.
     def = gensym("PyMethodDef")
     @eval const $def = PyMethodDef[PyMethodDef($name, $f, $flags)]
-    PyObject(@pycheckn ccall((@pysym :PyCFunction_NewEx), PyPtr,
-                             (Ptr{PyMethodDef}, Ptr{Void}, Ptr{Void}),
-                             eval(def), C_NULL, C_NULL))
+    PyObject(
+        @pycheckn(ccall((@pysym :PyCFunction_NewEx), PyPtr,
+            (Ptr{PyMethodDef}, Ptr{Void}, Ptr{Void}),
+            eval(def), C_NULL, C_NULL)),
+        string("pymethod|", name)
+    )                   
 end
 
 ################################################################
@@ -29,19 +32,20 @@ end
 
 function jl_Function_call(self_::PyPtr, args_::PyPtr, kw_::PyPtr)
     ret_ = convert(PyPtr, C_NULL)
-    args = PyObject(args_)
+    args = PyObject(args_, "jl_Function_call|args")
     try
         f = unsafe_pyjlwrap_to_objref(self_)::Function
         if kw_ == C_NULL
             ret = PyObject(f(convert(PyAny, args)...))
         else
-            kw = PyDict{Symbol,PyAny}(PyObject(kw_))
+            kw = PyDict{Symbol,PyAny}(PyObject(kw_, "jL_Function_call|kw_"))
             kwargs = [ (k,v) for (k,v) in kw ]
             ret = PyObject(f(convert(PyAny, args)...; kwargs...))
         end
         ret_ = ret.o
         ret.o = convert(PyPtr, C_NULL) # don't decref
     catch e
+        println_directly("jl_Function_call ate: $e")
         pyraise(e)
     finally
         args.o = convert(PyPtr, C_NULL) # don't decref
