@@ -236,7 +236,7 @@ end
 # induces a double decref.
 function pyincref(o::PyPtr)
     ccall((@pysym :Py_IncRef), Void, (PyPtr,), o)
-    PyObject(o)
+    PyObject(o, "pyincref")
 end
 
 """
