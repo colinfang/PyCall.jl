@@ -31,26 +31,25 @@ end
 # and calls it.
 
 function jl_Function_call(self_::PyPtr, args_::PyPtr, kw_::PyPtr)
-    ret_ = convert(PyPtr, C_NULL)
+    # don't need pyincref because of finally clause below
     args = PyObject(args_, "jl_Function_call|args")
     try
         f = unsafe_pyjlwrap_to_objref(self_)::Function
         if kw_ == C_NULL
             ret = PyObject(f(convert(PyAny, args)...))
         else
-            kw = PyDict{Symbol,PyAny}(PyObject(kw_, "jL_Function_call|kw_"))
+            kw = PyDict{Symbol,PyAny}(pyincref(kw_, "jL_Function_call|kw_"))
             kwargs = [ (k,v) for (k,v) in kw ]
             ret = PyObject(f(convert(PyAny, args)...; kwargs...))
         end
-        ret_ = ret.o
-        ret.o = convert(PyPtr, C_NULL) # don't decref
+        return pystealref!(ret)
     catch e
         println_directly("jl_Function_call ate: $e")
         pyraise(e)
     finally
-        args.o = convert(PyPtr, C_NULL) # don't decref
+        args.o = PyPtr_NULL # don't decref
     end
-    return ret_::PyPtr
+    return PyPtr_NULL
 end
 
 function pycallback(f::Function)

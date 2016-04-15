@@ -354,11 +354,8 @@ unsafe_pyjlwrap_to_objref(o::PyPtr) =
   unsafe_pointer_to_objref(unsafe_load(convert(Ptr{Ptr{Void}}, o), 3))
 
 function pyjlwrap_repr(o::PyPtr)
-    o = PyObject(try string("<PyCall.jlwrap ",unsafe_pyjlwrap_to_objref(o),">")
-                 catch "<PyCall.jlwrap NULL>"; end)
-    oret = o.o
-    o.o = convert(PyPtr, C_NULL) # don't decref
-    return oret
+    pystealref!(PyObject(try string("<PyCall.jlwrap ",unsafe_pyjlwrap_to_objref(o),">")
+                 catch "<PyCall.jlwrap NULL>"; end))
 end
 
 function pyjlwrap_hash(o::PyPtr)

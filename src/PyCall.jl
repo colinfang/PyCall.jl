@@ -140,6 +140,7 @@ end
 
 typealias PyPtr Ptr{PyObject_struct} # type for PythonObject* in ccall
 
+const PyPtr_NULL = PyPtr(C_NULL)
 #########################################################################
 # Wrapper around Python's C PyObject* type, with hooks to Python reference
 # counting and conversion routines to/from C and Julia types.
@@ -216,12 +217,12 @@ function mark_fin(o::PyObject)
 end
 
 
-PyNULL() = PyObject(convert(PyPtr, C_NULL))
+PyNULL() = PyObject(PyPtr_NULL)
 
 function pydecref(o::PyObject)
     mark_fin(o)
     ccall(@pysym(:Py_DecRef), Void, (PyPtr,), o.o)
-    o.o = convert(PyPtr, C_NULL)
+    o.o = PyPtr_NULL
     o
 end
 
@@ -238,6 +239,18 @@ function pyincref(o::PyPtr)
     PyObject(o)
 end
 
+"""
+"Steal" a reference from a PyObject: return the raw PyPtr, while
+setting the corresponding `o.o` field to `NULL` so that no decref
+will be performed when `o` is garbage collected.  (This means that
+you can no longer use `o`.)  Used for passing objects to Python.
+"""
+function pystealref!(o::PyObject)
+    optr = o.o
+    o.o = PyPtr_NULL # don't decref when o is gc'ed
+    return optr
+end
+ 
 function Base.copy!(dest::PyObject, src::PyObject)
     pydecref(dest)
     dest.o = src.o
