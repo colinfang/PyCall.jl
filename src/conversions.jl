@@ -459,7 +459,7 @@ type PyDict{K,V} <: Associative{K,V}
         new(o, pyisinstance(o, @pyglobalobj :PyDict_Type))
     end
     function PyDict()
-        new(PyObject(@pycheckn(ccall((@pysym :PyDict_New), PyPtr, ())), true), "PyDict|()")
+        new(PyObject(@pycheckn(ccall((@pysym :PyDict_New), PyPtr, ())), "PyDict|()"), true)
     end
 end
 
