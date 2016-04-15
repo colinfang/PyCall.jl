@@ -38,7 +38,7 @@ function jl_Function_call(self_::PyPtr, args_::PyPtr, kw_::PyPtr)
         if kw_ == C_NULL
             ret = PyObject(f(convert(PyAny, args)...))
         else
-            kw = PyDict{Symbol,PyAny}(pyincref(kw_, "jL_Function_call|kw_"))
+            kw = PyDict{Symbol,PyAny}(pyincref(kw_))
             kwargs = [ (k,v) for (k,v) in kw ]
             ret = PyObject(f(convert(PyAny, args)...; kwargs...))
         end
